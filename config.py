@@ -4,7 +4,7 @@ from transformers import AutoConfig,PretrainedConfig
 @dataclass
 class Config:
     model:str
-
+    kvcache_block_size:int=16 
     hf_config:PretrainedConfig|None=None
 
     def __post_init__(self):
