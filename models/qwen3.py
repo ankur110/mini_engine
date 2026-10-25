@@ -14,13 +14,13 @@ class Qwen3Attention(nn.Module):
         super().__init__()
         self.num_heads=config.num_attention_heads
         self.num_kv_heads=config.num_key_value_heads
-        self.head_dim=self.head_dim
+        self.head_dim=config.head_dim
         self.q_size=self.num_heads*self.head_dim
         self.kv_size=self.num_kv_heads*self.head_dim
-        self.qkv_proj=QKVLinear(config.hidden_size,self.num_heads,self.num_kv_heads)
+        self.qkv_proj=QKVLinear(config.hidden_size,self.head_dim,self.num_heads,self.num_kv_heads)
         self.o_proj=nn.Linear(self.q_size,config.hidden_size,bias=False)
-        self.q_norm=RMSNorm(config.hidden_size,config.rms_norm_eps)
-        self.k_norm=RMSNorm(config.hidden_size,config.rms_norm_eps)
+        self.q_norm=RMSNorm(config.head_dim,config.rms_norm_eps)
+        self.k_norm=RMSNorm(config.head_dim,config.rms_norm_eps)
         self.rotary_emb=rotary_emb
         self.attn=Attention(self.num_heads,self.head_dim,self.head_dim**-0.5,self.num_kv_heads)
 
@@ -35,7 +35,7 @@ class Qwen3Attention(nn.Module):
         k=self.k_norm(k)
         q,k=self.rotary_emb(positions,q,k)
         o=self.attn(q,k,v)
-        return self.o_proj(o)
+        return self.o_proj(o.reshape(-1, self.q_size))
     
 
 
@@ -64,11 +64,12 @@ class Qwen3DecoderLayer(nn.Module):
 
     def forward(self,positions,hidden_states,residual):
         if residual is None:
-            hidden_states,residual=self.input_layernorm(hidden_states),residual
+            residual=hidden_states
+            hidden_states=self.input_layernorm(hidden_states)
         else:
             hidden_states,residual=self.input_layernorm(hidden_states,residual)
         hidden_states=self.self_attn(positions,hidden_states)
-        hidden_states=self.post_attention_layernorm(hidden_states,residual)
+        hidden_states,residual=self.post_attention_layernorm(hidden_states,residual)
         hidden_states=self.mlp(hidden_states)
         return hidden_states,residual
     
@@ -76,15 +77,13 @@ class Qwen3DecoderLayer(nn.Module):
 
 class Qwen3Model(nn.Module):
     def __init__(self,config):
-        super().__init_()
-        theta=config.rope_parameters["rope_theta"]
-        rotary=RotaryEmbedding(config.head_dim,config.max_positions)
+        super().__init__()
+        rotary=RotaryEmbedding(config.head_dim,config.max_position_embeddings,config.rope_parameters["rope_theta"])
         self.embed_tokens=VocabEmbedding(config.vocab_size,config.hidden_size)
         self.layers=nn.ModuleList([Qwen3DecoderLayer(config,rotary) for _ in range(28)])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(self,input_ids,positions):
-        # h=embed; residual=None; loop layers; h,_=self.norm(h,residual); return h  → [T,1024]
         h=self.embed_tokens(input_ids)
         residual=None
         for layer in self.layers:
@@ -103,6 +102,7 @@ class Qwen3ForCausalLM(nn.Module):
     }
 
     def __init__(self,config):
+        super().__init__()
         self.model=Qwen3Model(config)
         self.lm_head=LMHead(config.vocab_size,config.hidden_size)
         if config.tie_word_embeddings:
