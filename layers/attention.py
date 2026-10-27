@@ -16,7 +16,7 @@ def store_kvcache(k,v,k_cache,v_cache,slot_mapping):
 def paged_attention(q,k_cache,v_cache,context,scale):
     bt=context.block_tables.clamp(min=0).long()
     k=k_cache[bt].flatten(1,2)[:,:context.max_seqlen_k]
-    v=v_cache[bt].flatten(1,2)[:,:context.max_seqlen_v]
+    v=v_cache[bt].flatten(1,2)[:,:context.max_seqlen_k]
     cu=context.cu_seqlens_q
     q_lens=cu[1:]-cu[:-1]
     B=context.block_tables.shape[0]
