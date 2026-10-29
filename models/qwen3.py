@@ -80,7 +80,7 @@ class Qwen3Model(nn.Module):
         super().__init__()
         rotary=RotaryEmbedding(config.head_dim,config.max_position_embeddings,config.rope_parameters["rope_theta"])
         self.embed_tokens=VocabEmbedding(config.vocab_size,config.hidden_size)
-        self.layers=nn.ModuleList([Qwen3DecoderLayer(config,rotary) for _ in range(28)])
+        self.layers=nn.ModuleList([Qwen3DecoderLayer(config,rotary) for _ in range(config.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(self,input_ids,positions):
