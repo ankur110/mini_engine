@@ -6,3 +6,4 @@ venv/
 *.safetensors
 *.bin
 *.pt
+general.ipynb
