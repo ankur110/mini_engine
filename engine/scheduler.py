@@ -11,18 +11,19 @@ class Scheduler:
         self.max_num_batched_tokens=config.max_num_batched_tokens
         self.eos=config.eos
         self.block_size=config.kvcache_block_size
+        self.max_model_len=config.max_model_len
 
         self.block_manager=BlockManager(config.num_kvcache_blocks,config.kvcache_block_size)
         self.waiting:deque[Sequence]=deque()
         self.running:deque[Sequence]=deque()
-
+        
 
     def is_finished(self)->bool:
         return not self.waiting and not self.running
 
     def add(self,seq:Sequence):
         total=seq.num_prompt_tokens+seq.sampling_params.max_tokens
-        if total>self.max_num_batched_tokens:
+        if total>self.max_model_len:
             raise ValueError(f"total tokens should be less than max batched tokens")
         num_blocks=(total+self.block_size-1)//self.block_size
         if num_blocks>len(self.block_manager.blocks):
