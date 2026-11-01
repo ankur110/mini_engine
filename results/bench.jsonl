@@ -1,0 +1,2 @@
+{"engine": "mini", "gpu": "NVIDIA A100-SXM4-40GB", "torch": "2.15.0+cu132", "num_seqs": 256, "input_tokens": 142827, "output_tokens": 133966, "time_s": 86.78, "throughput_tok_s": 1543.7, "time": "2026-11-01T16:00:33"}
+{"engine": "vllm", "gpu": "NVIDIA A100-SXM4-40GB", "torch": "2.13.0+cu130", "num_seqs": 256, "input_tokens": 142827, "output_tokens": 133966, "time_s": 14.98, "throughput_tok_s": 8940.5, "time": "2026-11-01T16:08:40"}
