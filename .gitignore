@@ -7,3 +7,4 @@ venv/
 *.bin
 *.pt
 general.ipynb
+checks.py
