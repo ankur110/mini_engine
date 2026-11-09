@@ -11,6 +11,7 @@ p.add_argument("--engine",choices=["mini","vllm","nano"],default="mini")
 p.add_argument("--model",default="~/models/Qwen3-0.6B")
 p.add_argument("--num-seqs",type=int,default=256)
 p.add_argument("--out",default="results/bench.jsonl")
+p.add_argument("--label",default="")   
 args=p.parse_args()
 path=os.path.expanduser(args.model)
 
@@ -35,7 +36,7 @@ else:
 
 sps=[SamplingParams(temperature=0.6,ignore_eos=True,max_tokens=m) for m in max_tokens]
 
-llm.generate(["Benchmark: "],SamplingParams(),use_tqdm=False)   # warm-up
+llm.generate(["Benchmark: "],SamplingParams(),use_tqdm=False)   
 
 t=time.time()
 llm.generate(prompts,sps,use_tqdm=False)
@@ -44,6 +45,7 @@ t=time.time()-t
 total=sum(max_tokens)
 row={
     "engine":args.engine,
+    "label":args.label,
     "gpu":torch.cuda.get_device_name(0),
     "torch":torch.__version__,
     "num_seqs":N,
