@@ -8,3 +8,5 @@ venv/
 *.pt
 general.ipynb
 checks.py
+kernel_checks.py
+results/kernels.jsonl
