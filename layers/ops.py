@@ -10,7 +10,7 @@ USE_CUDA="-DUSE_CUDA"
 
 load(
     name="mini_engine_ops",
-    sources=[os.path.join(CSRC,f) for f in ("ops.cpp","kv_cache.cu","paged_decode.cu")],
+    sources=[os.path.join(CSRC,f) for f in ("ops.cpp","kv_cache.cu","paged_decode.cu","paged_prefill.cu")],
     extra_cflags=["-O3",STABLE,USE_CUDA],
     extra_cuda_cflags=["-O3","-lineinfo","-Xptxas=-v",STABLE,USE_CUDA],   
     is_python_module=False,   
@@ -47,3 +47,8 @@ def paged_decode(q,k_cache,v_cache,block_tables,context_lens,scale,max_seqlen_k)
     if use_v1:
         return paged_decode_v1(q,k_cache,v_cache,block_tables,context_lens,scale)
     return paged_decode_v2(q,k_cache,v_cache,block_tables,context_lens,scale,max_seqlen_k)
+
+def paged_prefill(q,k_cache,v_cache,cu_seqlens_q,context_lens,block_tables,scale):
+    out=torch.empty(q.shape,dtype=q.dtype,device=q.device)
+    torch.ops.mini_engine.paged_prefill(out,q,k_cache,v_cache,cu_seqlens_q,context_lens,block_tables,float(scale))
+    return out
