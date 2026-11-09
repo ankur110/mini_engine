@@ -1,7 +1,12 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from utils.context import get_context
+
+USE_OPS=os.environ.get("MINI_ENGINE_OPS","1")=="1"   
+if USE_OPS:
+    from layers import ops                           
 
 def store_kvcache(k,v,k_cache,v_cache,slot_mapping):
     kc=k_cache.view(-1,k_cache.shape[-2],k_cache.shape[-1])
@@ -53,5 +58,12 @@ class Attention(nn.Module):
             v=v.transpose(0,1).unsqueeze(0)
             o=F.scaled_dot_product_attention(q,k,v,is_causal=True,scale=self.scale,enable_gqa=True)
             return o.squeeze(0).transpose(0,1)
-        store_kvcache(k,v,self.k_cache,self.v_cache,context.slot_mapping)
-        return paged_attention(q,self.k_cache,self.v_cache,context,self.scale)
+        if not USE_OPS:
+            store_kvcache(k,v,self.k_cache,self.v_cache,context.slot_mapping)
+            return paged_attention(q,self.k_cache,self.v_cache,context,self.scale)
+        ops.store_kvcache(k,v,self.k_cache,self.v_cache,context.slot_mapping)
+        if context.is_prefill:
+            return ops.paged_prefill(q,self.k_cache,self.v_cache,context.cu_seqlens_q,
+                                     context.context_lens,context.block_tables,self.scale)
+        return ops.paged_decode(q,self.k_cache,self.v_cache,context.block_tables,
+                                context.context_lens,self.scale,context.max_seqlen_k)
