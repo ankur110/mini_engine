@@ -31,3 +31,14 @@ void paged_decode_v2(
     torch::stable::Tensor& exp_sums,
     double scale
 );
+
+void paged_prefill(
+    torch::stable::Tensor& out,
+    const torch::stable::Tensor& q,
+    const torch::stable::Tensor& k_cache,
+    const torch::stable::Tensor& v_cache,
+    const torch::stable::Tensor& cu_seqlens_q,
+    const torch::stable::Tensor& context_lens,
+    const torch::stable::Tensor& block_tables,
+    double scale
+);
