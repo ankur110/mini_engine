@@ -19,43 +19,42 @@ class LLMEngine:
         config.eos=self.tokenizer.eos_token_id
         self.scheduler=Scheduler(config)
 
-    def add_request(self,prompt:str|list[int],sampling_params:SamplingParams):
+    def add_request(self,prompt:str|list[int],sampling_params:SamplingParams,priority:int=0)->int:
         if isinstance(prompt,str):
             prompt=self.tokenizer.encode(prompt)
-        seq=Sequence(prompt,sampling_params)
+        seq=Sequence(prompt,sampling_params,priority)
         self.scheduler.add(seq)
+        return seq.seq_id
 
-    def step(self)->tuple[list[tuple[int,list[int]]],int,bool]:
-        seqs,is_prefill=self.scheduler.schedule()
-        num_tokens=sum(len(seq)-seq.num_cached_tokens for seq in seqs) if is_prefill else len(seqs)
-        token_ids=self.model_runner.run(seqs,is_prefill)
-        self.scheduler.postprocess(seqs,token_ids)
-        outputs=[(seq.seq_id,seq.completion_token_ids) for seq in seqs if seq.is_finished]
-        return outputs,num_tokens,is_prefill
+    def step(self)->tuple[list[tuple[int,list[int]]],int,int,list[int]]:
+        seqs=self.scheduler.schedule()
+        num_decode=sum(1 for s in seqs if s.num_scheduled_tokens==1)
+        num_prefill=sum(s.num_scheduled_tokens for s in seqs if s.num_scheduled_tokens>1)
+        token_ids=self.model_runner.run(seqs)
+        emitted=self.scheduler.postprocess(seqs,token_ids)
+        outputs=[(s.seq_id,s.completion_token_ids) for s in emitted if s.is_finished]
+        return outputs,num_prefill,num_decode,[s.seq_id for s in emitted]
 
     def is_finished(self)->bool:
         return self.scheduler.is_finished()
 
     def generate(self,prompts:list[str]|list[list[int]],
                  sampling_params:SamplingParams|list[SamplingParams],
-                 use_tqdm:bool=True)->list[dict]:
+                 use_tqdm:bool=True,priorities:list[int]|None=None)->list[dict]:
         if not isinstance(sampling_params,list):
             sampling_params=[sampling_params]*len(prompts)
-        for prompt,params in zip(prompts,sampling_params):
-            self.add_request(prompt,params)
+        priorities=priorities or [0]*len(prompts)
+        for prompt,params,prio in zip(prompts,sampling_params,priorities):
+            self.add_request(prompt,params,prio)
 
         pbar=tqdm(total=len(prompts),desc="Generating",dynamic_ncols=True,disable=not use_tqdm)
         outputs={}
-        prefill_tput=decode_tput=0.0
         while not self.is_finished():
             t=perf_counter()
-            out,n,is_prefill=self.step()
+            out,num_prefill,num_decode,_=self.step()
             dt=perf_counter()-t
-            if is_prefill:
-                prefill_tput=n/dt
-            else:
-                decode_tput=n/dt
-            pbar.set_postfix({"prefill":f"{prefill_tput:.1f} tok/s","decode":f"{decode_tput:.1f} tok/s"})
+            pbar.set_postfix({"prefill":num_prefill,"decode":num_decode,
+                              "tok/s":f"{(num_prefill+num_decode)/dt:.0f}"})
             for seq_id,ids in out:
                 outputs[seq_id]=ids
                 pbar.update(1)

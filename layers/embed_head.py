@@ -18,7 +18,7 @@ class LMHead(nn.Module):
 
     def forward(self,hidden_states):
         context=get_context()
-        if context.is_prefill:
-            hidden_states=hidden_states[context.cu_seqlens_q[1:].long()-1]
+        if context.logits_indices is not None:       
+            hidden_states=hidden_states[context.logits_indices]
         return F.linear(hidden_states,self.weight)
 

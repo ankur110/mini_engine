@@ -4,9 +4,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from utils.context import get_context
 
-USE_OPS=os.environ.get("MINI_ENGINE_OPS","1")=="1"   
+USE_OPS=os.environ.get("MINI_ENGINE_OPS","1")=="1"
+ATTN=os.environ.get("MINI_ENGINE_ATTN","split")      
+assert ATTN in ("split","unified")
 if USE_OPS:
-    from layers import ops                           
+    from layers import ops
 
 def store_kvcache(k,v,k_cache,v_cache,slot_mapping):
     kc=k_cache.view(-1,k_cache.shape[-2],k_cache.shape[-1])
@@ -14,8 +16,6 @@ def store_kvcache(k,v,k_cache,v_cache,slot_mapping):
     keep=slot_mapping>=0
     kc[slot_mapping[keep]]=k[keep]
     vc[slot_mapping[keep]]=v[keep]
-
-
 
 
 def paged_attention(q,k_cache,v_cache,context,scale):
@@ -28,17 +28,17 @@ def paged_attention(q,k_cache,v_cache,context,scale):
     seq_idx=torch.repeat_interleave(torch.arange(B,device=q.device),q_lens,output_size=q.shape[0])
     local=torch.arange(q.shape[0],device=q.device)-cu[seq_idx]
     q_pad=q.new_zeros(B,context.max_seqlen_q,q.shape[1],q.shape[2])
-    q_pad[seq_idx,local]=q  
-
-    i=torch.arange(context.max_seqlen_q, device=q.device)[None, :, None]
-    j=torch.arange(context.max_seqlen_k, device=q.device)[None, None, :]
-    start=(context.context_lens - q_lens)[:, None, None]        # tokens cached before this step
-    mask = (j <= start + i) & (j < context.context_lens[:, None, None])
+    q_pad[seq_idx,local]=q
+    i=torch.arange(context.max_seqlen_q,device=q.device)[None,:,None]
+    j=torch.arange(context.max_seqlen_k,device=q.device)[None,None,:]
+    start=(context.context_lens-q_lens)[:,None,None]
+    mask=(j<=start+i)&(j<context.context_lens[:,None,None])
     o=F.scaled_dot_product_attention(
-        q_pad.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
-        attn_mask=mask[:, None], scale=scale, enable_gqa=True,
+        q_pad.transpose(1,2),k.transpose(1,2),v.transpose(1,2),
+        attn_mask=mask[:,None],scale=scale,enable_gqa=True,
     )
-    return o.transpose(1, 2)[seq_idx, local]   
+    return o.transpose(1,2)[seq_idx,local]
+
 
 class Attention(nn.Module):
     def __init__(self,num_heads,head_dim,scale,num_kv_heads):
@@ -49,10 +49,9 @@ class Attention(nn.Module):
         self.num_kv_heads=num_kv_heads
         self.k_cache=self.v_cache=torch.tensor([])
 
-
     def forward(self,q,k,v):
         context=get_context()
-        if self.k_cache.numel() == 0 or context.slot_mapping is None:
+        if self.k_cache.numel()==0 or context.slot_mapping is None:
             q=q.transpose(0,1).unsqueeze(0)
             k=k.transpose(0,1).unsqueeze(0)
             v=v.transpose(0,1).unsqueeze(0)
@@ -62,8 +61,17 @@ class Attention(nn.Module):
             store_kvcache(k,v,self.k_cache,self.v_cache,context.slot_mapping)
             return paged_attention(q,self.k_cache,self.v_cache,context,self.scale)
         ops.store_kvcache(k,v,self.k_cache,self.v_cache,context.slot_mapping)
-        if context.is_prefill:
+        D=context.num_decodes
+        T=q.shape[0]
+        if ATTN=="unified" or D==0:                  
             return ops.paged_prefill(q,self.k_cache,self.v_cache,context.cu_seqlens_q,
                                      context.context_lens,context.block_tables,self.scale)
-        return ops.paged_decode(q,self.k_cache,self.v_cache,context.block_tables,
-                                context.context_lens,self.scale,context.max_seqlen_k)
+        if D==T:                                     
+            return ops.paged_decode(q,self.k_cache,self.v_cache,context.block_tables,
+                                    context.context_lens,self.scale,context.decode_max_seqlen_k)
+        out=torch.empty_like(q)                      
+        ops.paged_decode(q[:D],self.k_cache,self.v_cache,context.block_tables[:D],
+                         context.context_lens[:D],self.scale,context.decode_max_seqlen_k,out=out[:D])
+        ops.paged_prefill(q[D:],self.k_cache,self.v_cache,context.prefill_cu_seqlens_q,
+                          context.context_lens[D:],context.block_tables[D:],self.scale,out=out[D:])
+        return out
