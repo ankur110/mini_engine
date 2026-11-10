@@ -27,21 +27,26 @@ class BlockManager:
         self.block_size=block_size
         self.blocks=[Block(i) for i in range(num_blocks)]
         self.hash_to_block_id={}
-        self.free_block_ids=deque(range(num_blocks))
+        self.free_block_ids=deque(range(num_blocks))    
         self.used_block_ids=set()
 
     @classmethod
     def compute_hash(cls,token_ids:list[int],prefix:int=-1)->int:
         h=xxhash.xxh64()
-        if(prefix!=-1):
+        if prefix!=-1:
             h.update(prefix.to_bytes(8,"little"))
         h.update(np.array(token_ids,dtype=np.int64).tobytes())
         return h.intdigest()
 
+    @property
+    def num_free_blocks(self)->int:
+        return len(self.free_block_ids)
+
     def _allocate_block(self,block_id:int)->Block:
         block=self.blocks[block_id]
-
         assert block.ref_count==0
+        if block.hash!=-1 and self.hash_to_block_id.get(block.hash)==block_id:
+            del self.hash_to_block_id[block.hash]
         block.reset()
         self.free_block_ids.remove(block_id)
         self.used_block_ids.add(block_id)
@@ -53,37 +58,59 @@ class BlockManager:
         self.used_block_ids.remove(block_id)
         self.free_block_ids.append(block_id)
 
+    def _touch(self,block_id:int):
+        block=self.blocks[block_id]
+        if block.ref_count==0:
+            self.free_block_ids.remove(block_id)
+            self.used_block_ids.add(block_id)
+        block.ref_count+=1
 
-    def can_allocate(self,seq:Sequence)->bool:
-        return len(self.free_block_ids)>=seq.num_blocks
-
-    def allocate(self,seq:Sequence):
-        assert not seq.block_table
+    def find_prefix_hit(self,seq:Sequence)->list[int]:
+        hit=[]
         h=-1
-        cache_miss=False
-        for i in range(seq.num_blocks):
-            token_ids=seq.block(i) 
-            h=self.compute_hash(token_ids,h) if len(token_ids)==self.block_size else -1
+        for i in range((seq.num_tokens-1)//self.block_size):
+            token_ids=seq.block(i)
+            h=self.compute_hash(token_ids,h)
             block_id=self.hash_to_block_id.get(h,-1)
-            if(block_id==-1 or self.blocks[block_id].token_ids!=token_ids):
-                cache_miss=True
-            if(i==seq.num_blocks-1 and (i+1)*self.block_size==seq.num_tokens):
-                cache_miss=True
-            if cache_miss:
-                block_id=self.free_block_ids[0]
-                block=self._allocate_block(block_id)
-            else:
-                seq.num_cached_tokens+=self.block_size
-                if(block_id in self.used_block_ids):
-                    block=self.blocks[block_id]
-                    block.ref_count+=1
-                else:
-                    block= self._allocate_block(block_id)
-            if(h!=-1):
-                block.update(h,token_ids)
-                self.hash_to_block_id[h]=block_id
-            seq.block_table.append(block_id)
+            if block_id==-1 or self.blocks[block_id].token_ids!=token_ids:
+                break
+            hit.append(block_id)
+        return hit
 
+    def allocate_slots(self,seq:Sequence,num_new_tokens:int,hit_blocks:list[int]|None=None)->bool:
+        hit_blocks=hit_blocks or []
+        assert not hit_blocks or not seq.block_table
+        bs=self.block_size
+        computed=seq.num_computed_tokens+len(hit_blocks)*bs
+        total=(computed+num_new_tokens+bs-1)//bs
+        num_fresh=max(0,total-len(seq.block_table)-len(hit_blocks))
+        num_free_hits=sum(1 for b in hit_blocks if self.blocks[b].ref_count==0)
+        if num_fresh+num_free_hits>len(self.free_block_ids):
+            return False                                   
+        for block_id in hit_blocks:                        
+            self._touch(block_id)
+            seq.block_table.append(block_id)
+        seq.num_computed_tokens=computed
+        seq.num_cached_tokens+=len(hit_blocks)*bs
+        seq.num_hashed_blocks+=len(hit_blocks)
+        for _ in range(num_fresh):
+            block_id=self.free_block_ids[0]
+            self._allocate_block(block_id)
+            seq.block_table.append(block_id)
+        return True
+
+    def cache_full_blocks(self,seq:Sequence):
+        bs=self.block_size
+        end=seq.num_computed_tokens//bs
+        for i in range(seq.num_hashed_blocks,end):
+            block=self.blocks[seq.block_table[i]]
+            prefix=self.blocks[seq.block_table[i-1]].hash if i>0 else -1
+            assert i==0 or prefix!=-1
+            token_ids=seq.block(i)
+            h=self.compute_hash(token_ids,prefix)
+            block.update(h,token_ids)
+            self.hash_to_block_id[h]=block.block_id
+        seq.num_hashed_blocks=max(seq.num_hashed_blocks,end)
 
     def deallocate(self,seq:Sequence):
         for block_id in reversed(seq.block_table):
@@ -91,28 +118,7 @@ class BlockManager:
             block.ref_count-=1
             if block.ref_count==0:
                 self._deallocate_block(block_id)
-        seq.num_cached_tokens=0
         seq.block_table.clear()
-
-    def can_append(self,seq:Sequence)->bool:
-        return len(self.free_block_ids)>=(len(seq)%self.block_size==1)
-
-    def may_append(self,seq:Sequence):
-        block_table=seq.block_table
-        last_block=self.blocks[block_table[-1]]
-        if len(seq)%self.block_size==1:
-            assert last_block.hash!=-1
-            block_id=self.free_block_ids[0]
-            self._allocate_block(block_id)
-            block_table.append(block_id)
-
-        elif len(seq)%self.block_size==0:
-            assert last_block.hash==-1
-            token_ids=seq.block(seq.num_blocks-1)
-            prefix=self.blocks[block_table[-2]].hash if len(block_table)>1 else -1
-            h=self.compute_hash(token_ids, prefix)
-            last_block.update(h, token_ids)
-            self.hash_to_block_id[h]=last_block.block_id
-
-        else:
-            assert last_block.hash==-1
+        seq.num_computed_tokens=0
+        seq.num_cached_tokens=0
+        seq.num_hashed_blocks=0
